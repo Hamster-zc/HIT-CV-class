@@ -1,1 +1,84 @@
-*.mp4
+# ====================
+# Python 编译缓存
+# ====================
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+
+# ====================
+# 虚拟环境
+# ====================
+venv/
+env/
+.venv/
+.env
+
+# ====================
+# Jupyter Notebook
+# ====================
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# ====================
+# 模型权重与检查点（重点！）
+# ====================
+*.pth
+*.pt
+*.h5
+*.ckpt
+*.pb
+*.onnx
+*.weights
+checkpoint/
+checkpoints/
+*checkpoint*/
+
+# ====================
+# 日志与输出文件
+# ====================
+*.log
+results/
+output/
+runs/
+tensorboard_logs/
+
+# ====================
+# 实验数据与数据集（如果包含大文件）
+# ====================
+data/
+dataset/
+datasets/
+*.zip
+*.tar.gz
+*.rar
+
+# ====================
+# IDE 和操作系统
+# ====================
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ====================
+# 临时文件
+# ====================
+*.tmp
+*.bak
+*.orig
+
+# ====================
+# 图片
+# ====================
+*.jpg
+*.jpeg
+*.png
+*.bmp
+*.gif
