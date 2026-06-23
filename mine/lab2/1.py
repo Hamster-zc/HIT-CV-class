@@ -110,82 +110,98 @@ def ransac_homography(src_pts, dst_pts, threshold=5.0, max_iter=2000, confidence
         return None, None
 
 def Panorama_stitching(image_right, image_left, downscale_factor=2):
-    """
-    全景拼接函数。
-    
-    :param image_right: 右侧图像
-    :param image_left: 左侧图像
-    :param downscale_factor: 下采样因子
-    :return: 拼接后的全景图像
-    
-    """
-    # 对图像进行下采样，以期减少计算量
+    # -------------------- 特征提取与匹配（你的原代码，保持不变） --------------------
     image_right_downscaled = cv2.resize(image_right, None, fx=1/downscale_factor, fy=1/downscale_factor)
     image_left_downscaled = cv2.resize(image_left, None, fx=1/downscale_factor, fy=1/downscale_factor)
-
-    # 转换为灰度图像
     gray_right = cv2.cvtColor(image_right_downscaled, cv2.COLOR_BGR2GRAY)
     gray_left = cv2.cvtColor(image_left_downscaled, cv2.COLOR_BGR2GRAY)
-
-    # 使用SIFT特征检测器
     sift = cv2.SIFT_create()
-    keypoints_right, descriptors_right = sift.detectAndCompute(gray_right, None)  #接受一个灰度图像和一个掩码
-    keypoints_left, descriptors_left = sift.detectAndCompute(gray_left, None)
-    # 每个关键点都是一个带有许多属性的对象（如位置、尺度、方向等）
-    # 一个数组，每行对应一个关键点的描述符
-
-    # 使用暴力匹配器进行特征匹配
+    kp_r, des_r = sift.detectAndCompute(gray_right, None)
+    kp_l, des_l = sift.detectAndCompute(gray_left, None)
     bf = cv2.BFMatcher()
-    matches = bf.knnMatch(descriptors_right, descriptors_left, k=2)
-
-    # 通过Lowe's ratio test筛选出好的匹配点
+    matches = bf.knnMatch(des_r, des_l, k=2)
     good_matches = []
     for m, n in matches:
         if m.distance < 0.7 * n.distance:
             good_matches.append(m)
-
-    if len(good_matches) > 10:
-        src_pts = np.float32([keypoints_right[m.queryIdx].pt for m in good_matches]) * downscale_factor
-        dst_pts = np.float32([keypoints_left[m.trainIdx].pt for m in good_matches]) * downscale_factor
-
-        # 使用RANSAC计算单应矩阵
-        H, mask = ransac_homography(src_pts, dst_pts)
-        matches_mask = np.array(mask, dtype=int).tolist()  # 转换为Int类型列表
-
-        # 图像变形——透视变换
-        h_right, w_right = image_right.shape[:2]
-        h_left, w_left = image_left.shape[:2]
-        panorama = cv2.warpPerspective(image_right, H, (w_right + w_left, max(h_right, h_left)))
-        panorama[0:h_left, 0:w_left] = image_left
-
-        # 显示单应矩阵
-        print("Homography matrix:")
-        print(H)
-
-        # 显示匹配点比例
-        print(f"Matches ratio: {len(good_matches) / len(matches):.2f}")
-
-        # 显示匹配点
-        draw_params = dict(matchColor=(0, 255, 0),  # 在匹配的关键点间画绿线
-                           singlePointColor=None,
-                           matchesMask=matches_mask,  # 只画内点
-                           flags=2)
-        img_matches = cv2.drawMatches(image_right_downscaled, keypoints_right, image_left_downscaled, keypoints_left, good_matches, None, **draw_params)
-
-        # cv2.imshow("Matches", img_matches)
-        cv2.imwrite('matches.jpg', img_matches)
-
-        return panorama
-
-    else:
-        print("Not enough matches are found - {}/{}".format(len(good_matches), 10))
+    if len(good_matches) < 10:
+        print("Not enough matches")
         return None
+
+    src_pts = np.float32([kp_r[m.queryIdx].pt for m in good_matches]) * downscale_factor
+    dst_pts = np.float32([kp_l[m.trainIdx].pt for m in good_matches]) * downscale_factor
+    H, mask = ransac_homography(src_pts, dst_pts)  # 这里用你（或老师）的 ransac 函数
+
+    # -------------------- 修正点 1：计算右图四个角的精确投影边界 --------------------
+    # 获取尺寸
+    h_right, w_right = image_right.shape[:2]
+    h_left, w_left = image_left.shape[:2]
+
+    # 1. 右图四个角投影并归一化
+    corners_right = np.float32([[0, 0], [w_right, 0], [w_right, h_right], [0, h_right]])
+    corners_right_h = np.hstack([corners_right, np.ones((4, 1))])
+    warped_right = (H @ corners_right_h.T).T
+    warped_right = warped_right[:, :2] / warped_right[:, 2:]   # (4, 2)
+
+    # 2. 左图四个角（固定）
+    corners_left = np.float32([[0, 0], [w_left, 0], [w_left, h_left], [0, h_left]])
+
+    # 3. 合并所有角点，求全局边界
+    all_corners = np.vstack([corners_left, warped_right])
+    X_min, Y_min = all_corners.min(axis=0)
+    X_max, Y_max = all_corners.max(axis=0)
+
+    # 4. 平移补偿矩阵（将负坐标平移到 0）
+    T = np.array([[1, 0, -X_min], [0, 1, -Y_min], [0, 0, 1]])
+    H_final = T @ H
+
+    # 5. 画布尺寸
+    canvas_w = int(np.round(X_max - X_min))
+    canvas_h = int(np.round(Y_max - Y_min))
+
+    # 6. 变形右图（现在右图已平移到正坐标区域）
+    panorama = cv2.warpPerspective(image_right, H_final, (canvas_w, canvas_h))
+
+    # 7. 计算左图在画布上的偏移量（此时左图应在 ( -X_min, -Y_min ) 位置）
+    x_offset = int(np.round(-X_min))
+    y_offset = int(np.round(-Y_min))
+
+    # 8. 将左图放置到画布上（直接覆盖，后续再处理重叠区域的融合）
+    panorama[y_offset : y_offset + h_left, x_offset : x_offset + w_left] = image_left
+
+    # 计算重叠区域的水平范围（X 轴方向）
+    overlap_start = max(0, x_offset)
+    overlap_end = min(canvas_w, x_offset + w_left)
+    overlap_width = overlap_end - overlap_start
+
+    if overlap_width > 0:
+        # 逐列生成渐变的 alpha 值（从左侧的 1 平滑过渡到右侧的 0）
+        alpha = np.linspace(1, 0, overlap_width).reshape(1, overlap_width, 1)
+        
+        # 提取重叠区域的左图和右图
+        left_region = panorama[y_offset:y_offset + h_left, overlap_start:overlap_end]
+        right_region = panorama[y_offset:y_offset + h_left, overlap_start:overlap_end]  # 实际上是右图变形后的结果
+        
+        # 加权混合
+        blended_region = alpha * left_region + (1 - alpha) * right_region
+        panorama[y_offset:y_offset + h_left, overlap_start:overlap_end] = blended_region
+
+    # -------------------- 保存与返回 --------------------
+    print("Homography matrix:\n", H)
+    print(f"Matches ratio: {len(good_matches) / len(matches):.2f}")
+    
+    # 绘制匹配图（略）
+    draw_params = dict(matchColor=(0, 255, 0), singlePointColor=None, matchesMask=mask.tolist(), flags=2)
+    img_matches = cv2.drawMatches(image_right_downscaled, kp_r, image_left_downscaled, kp_l, good_matches, None, **draw_params)
+    cv2.imwrite('matches.jpg', img_matches)
+    
+    return panorama
 
 # 主程序
 if (__name__ == "__main__"):
     # 读取左右图像
-    image_right = cv2.imread('right.jpg')
-    image_left = cv2.imread('left.jpg')
+    image_right = cv2.imread(r'C:\ZC\HIT\Compulsory_Courses\CV\CV_lab\mine\lab2\data\right.jpg')
+    image_left = cv2.imread(r'C:\ZC\HIT\Compulsory_Courses\CV\CV_lab\mine\lab2\data\left.jpg')
 
     # 调用全景拼接函数，得到全景图像
     panorama = Panorama_stitching(image_right, image_left)
@@ -194,7 +210,8 @@ if (__name__ == "__main__"):
     if panorama is not None:
         # 显示全景图像
         # cv2.imshow('Panorama', panorama)
-        cv2.imwrite('panorama.jpg', panorama)  # 保存全景图像
+        result_path = r'C:\ZC\HIT\Compulsory_Courses\CV\CV_lab\mine\lab2\results\panorama.jpg'
+        cv2.imwrite(result_path, panorama)  # 保存全景图像
         # cv2.waitKey(0)
     else:
         print("Panorama stitching failed.")

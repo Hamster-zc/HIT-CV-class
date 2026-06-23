@@ -225,19 +225,53 @@ def process_image(image):
 
 
 # 处理视频
-def process_video(input_video_path, output_video_path):
+def process_video(input_video_path, output_video_path,scale=0.5):
     cap = cv2.VideoCapture(input_video_path)
+    # 获取原始视频的尺寸和帧率
+    orig_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    orig_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    fps = cap.get(cv2.CAP_PROP_FPS)
+
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(output_video_path, fourcc, 20.0, (int(cap.get(3)), int(cap.get(4))))
+
+    # 如果 scale == 1.0，则不做缩放（节省内存开销）
+    if scale >= 1.0:
+        scale = 1.0
 
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
-        processed_frame = process_image(frame)
+
+        # ---------- 核心修改：先缩小 ----------
+        if scale < 1.0:
+            # 缩小图像（用于加速计算）
+            small_frame = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+        else:
+            small_frame = frame
+        
+        # 在缩小的图像上跑完整的车道线检测流程（滤波、Canny、霍夫等）
+        # 注意：process_image 内部调用的 ROI 是基于相对比例（如 0.1, 0.6），所以自动适配小图
+        small_processed = process_image(small_frame)
+        
+        # ---------- 核心修改：再把结果放大回原图 ----------
+        if scale < 1.0:
+            # 将带有车道线的小图放大回原始分辨率
+            # 注意：cv2.resize 默认使用线性插值，对画质影响最小
+            processed_frame = cv2.resize(small_processed, (orig_width, orig_height), interpolation=cv2.INTER_LINEAR)
+        else:
+            processed_frame = small_processed
+        
+        # 写入原始尺寸的视频帧
         out.write(processed_frame)
-        print("视频处理进度: {:.2f}%".format((cap.get(cv2.CAP_PROP_POS_FRAMES) / cap.get(cv2.CAP_PROP_FRAME_COUNT)) * 100))
-        print()
+        
+        # 打印进度
+        current_frame = cap.get(cv2.CAP_PROP_POS_FRAMES)
+        total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+        if total_frames > 0:
+            progress = (current_frame / total_frames) * 100
+            print(f"视频处理进度: {progress:.2f}%", end='\r')
 
     cap.release()
     out.release()
@@ -246,6 +280,8 @@ def process_video(input_video_path, output_video_path):
 
 
 if (__name__ == '__main__'):
+    input_path = r'C:\ZC\HIT\Compulsory_Courses\CV\CV_lab\teacher\lab2\inputs\last.mp4'
+    output_path = r'C:\ZC\HIT\Compulsory_Courses\CV\CV_lab\teacher\lab2\outputs\output_drive_V3.mp4'
     # 处理视频
-    process_video('drive.mp4', 'output_drive_V3.mp4')
+    process_video(input_path, output_path,scale=0.5)  # 先缩小到原来的一半进行处理
     sys.exit(0)
